@@ -145,3 +145,143 @@ static class Entry extends WeakReference<ThreadLocal<?>> {
     }
 }
 ```
+
+
+**如果对于我上面的分析都能看得懂的话，下面我们一起探究ThreadLocal是如何处理内存泄露的**
+★符号所对应的号码我在下面有做详细讲解
+1. 先从set方法开始
+```java
+public void set(T value) {
+    Thread t = Thread.currentThread();
+    ThreadLocalMap map = getMap(t);
+    if (map != null)
+        // 当map存在时
+        map.set(this, value);
+    else
+        // 初始化map源码我在上面已经讲过了
+        createMap(t, value);
+}
+
+// key是this对象
+private void set(ThreadLocal<?> key, Object value) {
+
+    // We don't use a fast path as with get() because it is at
+    // least as common to use set() to create new entries as
+    // it is to replace existing ones, in which case, a fast
+    // path would fail more often than not.
+    // 获取table
+    Entry[] tab = table;
+    // 获取其长度
+    int len = tab.length;
+    // 通过ThreadLocal的HashCode计算该ThreadLocal处于tab的索引值
+    int i = key.threadLocalHashCode & (len-1);
+
+    // 获取这个位置的对象，如果有对象，进行判断，判断不符合条件，取下一个下标的对象，知道取到null为止
+    for (Entry e = tab[i];
+            e != null;
+            e = tab[i = nextIndex(i, len)]) {
+        // 获取这个位置所对应对象的key，由于是弱引用，有可能有值，有可能为null
+        ThreadLocal<?> k = e.get();
+        // 由于ThreadLocal外界引用和内部引用指向同一个对象，判断相等只需要看引用相等就行了，如果看过HashMap源码的朋友，没有必要以HashMap的判断去衡量key的相等。
+        if (k == key) {
+            // 如果key一样，是更新操作，只需要覆盖旧值
+            e.value = value;
+            // 覆盖成功，方法没有必要走下去了
+            return;
+        }
+        // ★⑴
+        if (k == null) {
+            // 如果k为null，说明其他ThreadLocal被回收了，咱先不看这个方法里怎么处置，从上下文可以推测出
+            // 会将这个位置的元素清理，然后在这个位置放入我们的值，走完这个方法return了发现没，而且还传了
+            // 三个可以考究的参数
+            // ★⑵
+            replaceStaleEntry(key, value, i);
+            return;
+        }
+    }
+    // 因为上面的for循环进行next下标迭代，迭代的元素key比较不一样，中途也没有内存泄露的对象，
+    // 则上面是迭代到null为止，所以直接在这个位置存储值
+    // 而且如果计算key.threadLocalHashCode & (len-1)位置为null，直接不走for循环，这个时候真的是放在自己原本要放的位置
+    tab[i] = new Entry(key, value);
+    // 元素+1
+    int sz = ++size;
+    if (!cleanSomeSlots(i, sz) && sz >= threshold)
+        rehash();
+}
+
+// 看到这心态都崩了呀，这啥啊
+// 首先传入了三个参数，当前ThreadLocal对象，设置的值和内存泄露的下标
+private void replaceStaleEntry(ThreadLocal<?> key, Object value,
+                                       int staleSlot) {
+    Entry[] tab = table;
+    int len = tab.length;
+    Entry e;
+
+    // slotToExpunge记录内存泄露下标
+    int slotToExpunge = staleSlot;
+    // 下标前移进行迭代,直到null为止
+    for (int i = prevIndex(staleSlot, len);
+            (e = tab[i]) != null;
+            i = prevIndex(i, len))
+        // 如果发现内存泄露对象 ★⑶
+        if (e.get() == null)
+            // 记录前一个内存泄露对象的位置最小下标
+            slotToExpunge = i;
+
+    // 从内存泄露对象位置后移动
+    for (int i = nextIndex(staleSlot, len);
+            (e = tab[i]) != null;
+            i = nextIndex(i, len)) {
+        ThreadLocal<?> k = e.get();
+        // 不排除我先遇到内蕴泄露进入这个方法，下标后移有可能是update操作，直到遇到null为止，解读★⑷
+        if (k == key) {
+            // 此时是update操作，肯定return
+            e.value = value;
+            // 将内存泄露的对象赋到i处
+            tab[i] = tab[staleSlot];
+            // 将更新后的数据移到staleSlot处
+            tab[staleSlot] = e;
+            // 说明之前迭代的key不为null，不然走下面的if，slotToExpunge就比staleSlot大了（不得不配服这些写源码的人，咱们只配看）此时的slotToExpunge == staleSlot说明前移没有找到内存泄露对象，后移没有找到key为null的情况，即内存泄露对象
+            if (slotToExpunge == staleSlot)
+                // 由于tab[staleSlot]内存泄露对象移到i处，所以此时最小内存泄露是i
+                slotToExpunge = i;
+            cleanSomeSlots(expungeStaleEntry(slotToExpunge), len);
+            return;
+        }
+        
+        // slotToExpunge == staleSlot的情况我在★⑶讲解过，所以此时slotToExpunge是迭代null位置为止内存泄露的最小下标★⑸
+        if (k == null && slotToExpunge == staleSlot)
+            slotToExpunge = i;
+    }
+
+    // 假设是第一次放值，能进入本方法说明我要把这个内存泄露的对象给替换掉
+    // If key not found, put new entry in stale slot
+    // 将值清理
+    tab[staleSlot].value = null;
+    // 放入我们的值
+    tab[staleSlot] = new Entry(key, value);
+
+    // If there are any other stale entries in run, expunge them
+    // 对于slotToExpunge，本方法对新建对他有两处改动，一处是前移最小内存泄露下标，一处是后移最小内存泄露下标
+    if (slotToExpunge != staleSlot)
+        cleanSomeSlots(expungeStaleEntry(slotToExpunge), len);
+}
+
+// 下标前移
+private static int prevIndex(int i, int len) {
+    return ((i - 1 >= 0) ? i - 1 : len - 1);
+}
+
+// 下标后移
+// 获取下一个下标，大家也可以认为这是数组下标的轮询算法，当然实现轮询有好几种，比如说ribbon负载均衡中的轮询，就是采用原子类AtomicInteger来保证原子性，+1取余的这种方式进行轮询。
+private static int nextIndex(int i, int len) {
+    // 如果超过长度回到下标0嘛
+    return ((i + 1 < len) ? i + 1 : 0);
+}
+```
+
+★⑴有些人有可能会疑问了，该位置的key为什么会为null，这我先得从ThreadLocalMap来说起，但是我又不得不提HashMap来做一个对比，这两个有一个共同的数据结构就是数组，HashMap是Node[]，ThreadLocalMap是Entry[]，但是HashMap中Node类是一个链表结构，而ThreadLocalMap不是，所以HashMap如果多个key计算的索引值一样，就会形成链表，采取一个纵向设计，但是由于ThreadLocal存在内存泄露风险，采取一个横向设计，所以设计ThreadLocalMap的数组元素只能放一个，但是不可避免两个ThreadLocal对象计算的索引值一样，为了保证不去覆盖别的ThreadLocal在本线程中存储的值，只好不停迭代下一个元素，来寻找自己存放的位置，这句话可以衍生出两个意思,第一就是在时间顺序上之前的ThreadLocal对象计算出的索引值和当前ThreadLocal对象计算的索引值一样，从而占着位置，第二个就是先前的ThreadLocal对象其位置被其他ThreadLocal占了，迭代到你的位置，从而占领你的位置。所以int i = key.threadLocalHashCode & (len-1);计算出的索引值不一定就放在这个位置，所以这个位置如果说被其他ThreadLocal对象占着，然后他又失去外界的强引用，k就有可能是null。
+★⑵这边大家可以进行思考，如果我第一次放ThreadLocal对象，根据set方法来推测下标范围，下标为[key.threadLocalHashCode & (len-1),后移迭代Entry数组第一个为null的下标]
+★⑶这里有一个细节，从这个内存泄露下标往前移，[key.threadLocalHashCode & (len-1)，staleSlot]之间肯定不会存在null，和内存泄露的对象，这是因为set方法中的for循环，大家可以仔细思考一下，所以前移的位置的下标值一定小于key.threadLocalHashCode & (len-1)，slotToExpunge的值就是记录就是下标前移内存泄露对象的下标位置，位置范围是(前移迭代Entry数组第一个为null的下标，key.threadLocalHashCode & (len-1))。但是slotToExpunge = staleSlot也是有可能的，两种情况，从key.threadLocalHashCode & (len-1)前移到null为止之间的位置不存在内存泄露的对象，也有可能key.threadLocalHashCode & (len-1)前面一个就是null，不迭代。
+★⑷这里有可能有人就会担心了，ThreadLocal通过计算出索引值，如果被占用，下标后移探测位置直到null为止，以null作为一个“沟”，我感觉用“沟”这个字来形容很恰当。会不会存在null值的下标以后会有这个ThreadLocal引用，从而无法覆盖并生成一个元素，衍生出Entry数组中存在两个相同ThreadLocal为key的存储数据。这种思考是多余的，因为从源码阅读过程中可以发现，从key.threadLocalHashCode & (len-1)计算出索引值开始，一点点后移去探测，如果中间没有其他ThreadLocal内存泄露，直到null，将这个位置占领，如果是其他ThreadLocal内存泄露，清理它并占用这个位置（也有可能是更新操作），所以从key.threadLocalHashCode & (len-1)到探测存储位置的这段元素中有可能[key,value]形式也有可能[null,value]，但绝不可能是null，在这中间有[null,value]形式，这种情况是当我第一次放值的时候，由于计算的索引值被人占了，导致我往后迭代，迭代的过程中有可能在泄露对象的地方新建元素，也有可能在后移第一个null位置新建元素，但是由于前面的其他的ThreadLocal对象在我新建这个元素之后外界的强引用消失，导致内存泄露，当我第二次放值的时候，在内存泄露的位置进入replaceStaleEntry方法，在这个方法下标后移去查找是否是更新操作是有必要的。
+★⑸此时这个判断还是很多人还是有疑问的，从staleSlot后移，记录第一个内存泄露元素下标，为什么是第一个，slotToExpunge = i嘛，赋了一次值后slotToExpunge肯定是等于staleSlot+1的。但是我说slotToExpunge为最小内存泄露下标恐怕很多人不服，为什么，难道staleSlot位置不是内存泄露嘛，replaceStaleEntry方法不就是因为这个位置内存泄露而进入的吗。但是我们要知道一点，对于新建操作，staleSlot下标是要被我们新建的元素替换掉的（不过看源码更新也是把这个位置替换掉），替换之后slotToExpunge难道不是内存泄露的最小下标吗
