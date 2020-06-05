@@ -147,7 +147,7 @@ static class Entry extends WeakReference<ThreadLocal<?>> {
 ```
 
 
-**如果对于我上面的分析都能看得懂的话，下面我们一起探究ThreadLocal是如何处理内存泄露的**
+**如果对于我上面的分析都能看得懂的话，下面我们一起探究ThreadLocal是如何处理内存泄露的**<br>
 ★符号所对应的号码我在下面有做详细讲解
 1. 先从set方法开始
 ```java
