@@ -200,9 +200,9 @@ static class Node<K,V> implements Map.Entry<K,V> {
     }
     ```
 
-<font color=red>★⑴</font>在HashMap的数据结构中我曾经说过，一般情况下threshold为数租长度的0.75，但是此时的table还是null，所以呢threshold经过tableSizeFor方法后计算出的是table的长度，这个情况在第一次put值的时候，进入resize操作的时候会有对应的处理。
-<font color=red>★⑵</font>至于为什么一上来先减1?详情看tableSizeFor.md文档。
-<font color=red>★⑶</font>putMapEntries方法在HashMap中是由两处地方调用，一个是构造器中调用，这种情况是table == null的情况，还有就是putAll的方法，table == null和table != null情况都有可能。取决于你是否put过值，put值会将table初始化。当然，如果table == null，对于新数组的容量是可以调节的，例如：旧数组容量是64，但是只放了8个元素，在计算新数组的容量时会计算为16，原因是float ft = ((float)s / loadFactor) + 1.0F;然后与threshold（其实table=null的情况，threshold扮演的角色是table.length）比较，是否需要调节。
+<font color=red>★⑴</font>在HashMap的数据结构中我曾经说过，一般情况下threshold为数租长度的0.75，但是此时的table还是null，所以呢threshold经过tableSizeFor方法后计算出的是table的长度，这个情况在第一次put值的时候，进入resize操作的时候会有对应的处理。<br>
+<font color=red>★⑵</font>至于为什么一上来先减1?详情看tableSizeFor.md文档。<br>
+<font color=red>★⑶</font>putMapEntries方法在HashMap中是由两处地方调用，一个是构造器中调用，这种情况是table == null的情况，还有就是putAll的方法，table == null和table != null情况都有可能。取决于你是否put过值，put值会将table初始化。当然，如果table == null，对于新数组的容量是可以调节的，例如：旧数组容量是64，但是只放了8个元素，在计算新数组的容量时会计算为16，原因是float ft = ((float)s / loadFactor) + 1.0F;然后与threshold（其实table=null的情况，threshold扮演的角色是table.length）比较，是否需要调节。<br>
 
 ### HashMap的核心方法
 
@@ -369,7 +369,7 @@ final Node<K,V>[] resize() {
     return newTab;
 }
 ```
-<font color=red>★⑴</font>(h = key.hashCode()) ^ (h >>> 16)这个就是将key对应的hashCode高16位和低16位进行异或求出一个hash值，这样充分利用了hashcode所有位，进行hash计算，求出来的hash值会更加的散列，减少hash碰撞，但是也有可能不同的key所计算的hash值是一样的，我举两个极端的例子，例1：如果两个key的hashcode值一样，所对应hash值一定一样。例2：如果两个key高16位和低16位互为相反，意味着hashcode不一样，但是计算的hash值是一样的。这些都会产生hash冲突，但是这种情况还是很罕见的。
-<font color=red>★⑵</font>(p = tab[i = (n - 1) & hash]) == null，这行代码，心坎(n - 1) & hash，这里的n是tab.length，有可能是resize之后的n，也有可能是if判断中获取的n，总之，高手写的代码就是这么的灵活妙哉。多学学这样的代码风格。之前在讨论table.length时，我一直说table的长度一定是2的n次方，此时n-1，对于数组来讲，这是数组下标的最大值，下标选择是[0,table.lenth-1]。对于二进制来讲，后位全是1，进行与的时候，所计算出的下标的决定权不在table身上，决定权在于key计算的hash值和n-1所对应的位01来决定，(n - 1) & hash这时应该与运算，相当于十进制中的取模，位运算计算的效率肯定远高于十进制，所以用在HashMap中，肯定是选用前者，毕竟map肯定是追求整体的一个速率的。计算出的索引值查看所对应的p节点是否为null。
-<font color=red>★⑶</font>p.hash == hash &&((k = p.key) == key || (key != null && key.equals(k)))，这个判断很常见，如果key产生了hash碰撞，还需要判断是否是同一个引用或者是equals是否相等，这就是为什么HashMap所用到的key一定要成对重写hashcode和equals方法。这里有一个细节，由于HashMap是允许以null为key的，所以需要判断，但是下面for中也对key作了null判断，其实这里我们可以发现，null为key是不会产生链表的，而且如果key为null，只能被第一个if条件捕捉到，下面看上去是没有必要再判断防止出现空指针，因为null为key根本不可能走到下面，但是作者还是写了，显然是为了代码健壮性。
+<font color=red>★⑴</font>(h = key.hashCode()) ^ (h >>> 16)这个就是将key对应的hashCode高16位和低16位进行异或求出一个hash值，这样充分利用了hashcode所有位，进行hash计算，求出来的hash值会更加的散列，减少hash碰撞，但是也有可能不同的key所计算的hash值是一样的，我举两个极端的例子，例1：如果两个key的hashcode值一样，所对应hash值一定一样。例2：如果两个key高16位和低16位互为相反，意味着hashcode不一样，但是计算的hash值是一样的。这些都会产生hash冲突，但是这种情况还是很罕见的。<br>
+<font color=red>★⑵</font>(p = tab[i = (n - 1) & hash]) == null，这行代码，心坎(n - 1) & hash，这里的n是tab.length，有可能是resize之后的n，也有可能是if判断中获取的n，总之，高手写的代码就是这么的灵活妙哉。多学学这样的代码风格。之前在讨论table.length时，我一直说table的长度一定是2的n次方，此时n-1，对于数组来讲，这是数组下标的最大值，下标选择是[0,table.lenth-1]。对于二进制来讲，后位全是1，进行与的时候，所计算出的下标的决定权不在table身上，决定权在于key计算的hash值和n-1所对应的位01来决定，(n - 1) & hash这时应该与运算，相当于十进制中的取模，位运算计算的效率肯定远高于十进制，所以用在HashMap中，肯定是选用前者，毕竟map肯定是追求整体的一个速率的。计算出的索引值查看所对应的p节点是否为null。<br>
+<font color=red>★⑶</font>p.hash == hash &&((k = p.key) == key || (key != null && key.equals(k)))，这个判断很常见，如果key产生了hash碰撞，还需要判断是否是同一个引用或者是equals是否相等，这就是为什么HashMap所用到的key一定要成对重写hashcode和equals方法。这里有一个细节，由于HashMap是允许以null为key的，所以需要判断，但是下面for中也对key作了null判断，其实这里我们可以发现，null为key是不会产生链表的，而且如果key为null，只能被第一个if条件捕捉到，下面看上去是没有必要再判断防止出现空指针，因为null为key根本不可能走到下面，但是作者还是写了，显然是为了代码健壮性。<br>
 
