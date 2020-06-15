@@ -299,50 +299,80 @@ final Node<K,V>[] resize() {
     int oldThr = threshold;
     // 初始化新的数组长度和新的阈值
     int newCap, newThr = 0;
+    // 如果旧的数组长度存在
     if (oldCap > 0) {
-        // 
+        // 如果超过最大长度
         if (oldCap >= MAXIMUM_CAPACITY) {
+            // 阈值为int最大，允许放满
             threshold = Integer.MAX_VALUE;
+            // 无法扩容了，返回旧数组
             return oldTab;
         }
+        // oldCap扩大2倍还小于MAXIMUM_CAPACITY并且oldCap大于等16
         else if ((newCap = oldCap << 1) < MAXIMUM_CAPACITY &&
                     oldCap >= DEFAULT_INITIAL_CAPACITY)
+            // 阈值扩大2倍
             newThr = oldThr << 1; // double threshold
     }
+    // oldCap = 0，并且此时oldThr>0
+    // ★⑷
     else if (oldThr > 0) // initial capacity was placed in threshold
         newCap = oldThr;
     else {               // zero initial threshold signifies using defaults
+    // oldCap = 0，并且此时oldThr = 0
+    // ★⑸
         newCap = DEFAULT_INITIAL_CAPACITY;
         newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);
     }
+    // 处理剩余情况的newThr
     if (newThr == 0) {
+        // 对★⑷情况处理，还有对oldCap《16情况处理
         float ft = (float)newCap * loadFactor;
         newThr = (newCap < MAXIMUM_CAPACITY && ft < (float)MAXIMUM_CAPACITY ?
                     (int)ft : Integer.MAX_VALUE);
     }
+    // 新的阈值赋上去
     threshold = newThr;
     @SuppressWarnings({"rawtypes","unchecked"})
+    // 定义新长度的新数组
         Node<K,V>[] newTab = (Node<K,V>[])new Node[newCap];
+    // 新数组
     table = newTab;
+    // 如果旧的数组不为null，说明不是第一次扩容
     if (oldTab != null) {
+        // 遍历旧数组术后存在元素
         for (int j = 0; j < oldCap; ++j) {
             Node<K,V> e;
+            // 节点不为null，说明要重新在新数组中计算存放
             if ((e = oldTab[j]) != null) {
+                // 设置旧的元素为null，防止内存泄露，e引用着，此对象不会被回收
                 oldTab[j] = null;
+                // 如果没有子节点
                 if (e.next == null)
+                    // 直接在新数组中计算自己的下标并且赋值上去
                     newTab[e.hash & (newCap - 1)] = e;
-                else if (e instanceof TreeNode)
+                else if (e instanceof TreeNode) // 红黑树操作
                     ((TreeNode<K,V>)e).split(this, newTab, j, oldCap);
                 else { // preserve order
+                    // 链表操作
+                    // 链条lo 头              尾
                     Node<K,V> loHead = null, loTail = null;
+                    // 链条hi 头              尾
                     Node<K,V> hiHead = null, hiTail = null;
                     Node<K,V> next;
+                    // 这里计算索引原理详见resize.md
+                    // ★⑹
                     do {
+                        // 获取子节点
                         next = e.next;
+                        // 第一次进来e还是头节点，请注意
                         if ((e.hash & oldCap) == 0) {
+                            // 尾还是null，说明无元素
                             if (loTail == null)
+                                // 头元素
                                 loHead = e;
                             else
+                                // 子元素
                                 loTail.next = e;
                             loTail = e;
                         }
@@ -354,12 +384,16 @@ final Node<K,V>[] resize() {
                             hiTail = e;
                         }
                     } while ((e = next) != null);
+                    // 尾元素为null，说明无元素
                     if (loTail != null) {
+                        // 无子节点
                         loTail.next = null;
+                        // 放原数组位置
                         newTab[j] = loHead;
                     }
                     if (hiTail != null) {
                         hiTail.next = null;
+                        // 放原数组索引位置+旧的数组长度
                         newTab[j + oldCap] = hiHead;
                     }
                 }
@@ -372,4 +406,6 @@ final Node<K,V>[] resize() {
 <font color=red>★⑴</font>(h = key.hashCode()) ^ (h >>> 16)这个就是将key对应的hashCode高16位和低16位进行异或求出一个hash值，这样充分利用了hashcode所有位，进行hash计算，求出来的hash值会更加的散列，减少hash碰撞，但是也有可能不同的key所计算的hash值是一样的，我举两个极端的例子，例1：如果两个key的hashcode值一样，所对应hash值一定一样。例2：如果两个key高16位和低16位互为相反，意味着hashcode不一样，但是计算的hash值是一样的。这些都会产生hash冲突，但是这种情况还是很罕见的。<br>
 <font color=red>★⑵</font>(p = tab[i = (n - 1) & hash]) == null，这行代码，心坎(n - 1) & hash，这里的n是tab.length，有可能是resize之后的n，也有可能是if判断中获取的n，总之，高手写的代码就是这么的灵活妙哉。多学学这样的代码风格。之前在讨论table.length时，我一直说table的长度一定是2的n次方，此时n-1，对于数组来讲，这是数组下标的最大值，下标选择是[0,table.lenth-1]。对于二进制来讲，后位全是1，进行与的时候，所计算出的下标的决定权不在table身上，决定权在于key计算的hash值和n-1所对应的位01来决定，(n - 1) & hash这时应该与运算，相当于十进制中的取模，位运算计算的效率肯定远高于十进制，所以用在HashMap中，肯定是选用前者，毕竟map肯定是追求整体的一个速率的。计算出的索引值查看所对应的p节点是否为null。<br>
 <font color=red>★⑶</font>p.hash == hash &&((k = p.key) == key || (key != null && key.equals(k)))，这个判断很常见，如果key产生了hash碰撞，还需要判断是否是同一个引用或者是equals是否相等，这就是为什么HashMap所用到的key一定要成对重写hashcode和equals方法。这里有一个细节，由于HashMap是允许以null为key的，所以需要判断，但是下面for中也对key作了null判断，其实这里我们可以发现，null为key是不会产生链表的，而且如果key为null，只能被第一个if条件捕捉到，下面看上去是没有必要再判断防止出现空指针，因为null为key根本不可能走到下面，但是作者还是写了，显然是为了代码健壮性。<br>
-
+<font color=red>★⑷</font>之前我说过，指定容量构造的时候，第一次扩容table为null，此时的threshold为数组长度的，所以旧的阈值直接赋给了新容量。<br>
+<font color=red>★⑸</font>这种情况就是大家最常用的无参构造器第一次扩容的情况，默认值是16长度，阈值12由此而来。<br>
+<font color=red>★⑹</font>这里一定看resize文档，看下来绝对会恍然大悟，而且非常简单，所以下面的源码我只用少量的笔墨去分析，分析一半就可以了。
