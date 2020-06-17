@@ -400,6 +400,7 @@ final Node<K,V>[] resize() {
             }
         }
     }
+    // 返回数组
     return newTab;
 }
 ```
@@ -409,3 +410,67 @@ final Node<K,V>[] resize() {
 <font color=red>★⑷</font>之前我说过，指定容量构造的时候，第一次扩容table为null，此时的threshold为数组长度的，所以旧的阈值直接赋给了新容量。<br>
 <font color=red>★⑸</font>这种情况就是大家最常用的无参构造器第一次扩容的情况，默认值是16长度，阈值12由此而来。<br>
 <font color=red>★⑹</font>这里一定看resize文档，看下来绝对会恍然大悟，而且非常简单，所以下面的源码我只用少量的笔墨去分析，分析一半就可以了。
+
+**如果上面的源码分析都可以理解透彻的话，心里应该就只剩下一个疑问，如何去转红黑树，如何操控红黑树，没有基础的甚至会问红黑树是什么？**
+
+### 转红黑树
+
+**转红黑树是在putVal方法中对链表操作中，当迭代了8个节点发现不是更新操作，会生成第9个元素，此时有可能转红黑树，在这里我仅仅说有可能，对准备转红黑树的方法treeifyBin中，我们可以找到答案。**
+
+#### treeifyBin(Node<K,V>[] tab, int hash)
+
+```java
+// tab：当前数组 hash：key的hash值
+final void treeifyBin(Node<K,V>[] tab, int hash) {
+    // n：记录数组的长度
+    int n, index; Node<K,V> e;
+    // 尽管tab在进入这个方法前大多数情况不为null，因为HashaMap线程不安全问题，代码的健壮性还是要有的
+    if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY)
+        // 之前我说过，超过8个元素不一定转红黑树，有可能会扩容，前提是数组的长度小于64(MIN_TREEIFY_CAPACITY)
+        // ★⑴
+        resize();
+    else if ((e = tab[index = (n - 1) & hash]) != null) { 
+        // 这里由于索引值一样，官方可太“坏”了，拿尾节点的hash值来获取头节点
+        TreeNode<K,V> hd = null, tl = null;
+        do {
+            TreeNode<K,V> p = replacementTreeNode(e, null);
+            if (tl == null)
+                hd = p;
+            else {
+                p.prev = tl;
+                tl.next = p;
+            }
+            tl = p;
+        } while ((e = e.next) != null);
+        if ((tab[index] = hd) != null)
+            hd.treeify(tab);
+    }
+}
+
+// For treeifyBin
+TreeNode<K,V> replacementTreeNode(Node<K,V> p, Node<K,V> next) {
+    return new TreeNode<>(p.hash, p.key, p.value, next);
+}
+
+// TreeNode继承了LinkedHashMap.Entry
+static final class TreeNode<K,V> extends LinkedHashMap.Entry<K,V>{
+    // 看一下红黑树节点
+
+    // 父节点
+    TreeNode<K,V> parent;
+    // 左右节点
+    TreeNode<K,V> left;
+    TreeNode<K,V> right;
+    // 
+    TreeNode<K,V> prev;
+    // 颜色flag
+    boolean red;
+    // Node父类来保存hash, key, val, next
+}
+
+// LinkedHashMap.Entry有继承了HashMap.Node，所以TreeNode是Node类型
+static class Entry<K,V> extends HashMap.Node<K,V> {}
+
+```
+
+<font color=red>★⑴</font>首先在链表和红黑树之间的选择，无非都是查询效率的问题。如果产生链表，就必须从头节点一层层next，时间复杂度是O(n)，这种查询效率非常糟糕，所以减少hash碰撞就是为了提高HashMap的性能。但是又不可避免会出现hash碰撞，形成链表。所以官方通过大量的实验测试来制定了HashMap重要参数，例如负载因子0.75，数组长度以2的次方幂等。而且采取了链表长度大于8并且数组长度大于等于64，转红黑树的效率会提升等优化措施，并且建议HashMap的所存放的数据量是可以提前预估好的，通过指定容量，就不会频繁扩容（扩容机制）影响性能。在这里链表长度大于8并且数组长度小于64也是一种优化措施，HashMap会认为长度在64以下的没有必要去转红黑树，先将其扩容，之前对于我在扩容分析如果吃的很透的话，我下面举的例子会轻松理解，首先我补一个细节，当进入treeifyBin方法之前，第9个元素已经放在第8的元素的next中了，p.next = newNode(hash, key, value, null);这是源码。例：假设数组的长度为16，在很极端的情况，我给出的8个hash值不同的元素所计算的索引值一样(只需要各个元素hash值后4位一样就行)，形成一个长度为8的链表，如果此时我在放一个元素，就很极端，索引值和这8个元素一样，成为链表的第9个节点，调用treeifyBin后发现，长度不满足64，只能resize，之前我说过，数组扩容两倍后，有可能将链表散到两个位置，一个是原数组位置，一个是原数组索引+原数组长度。有可能长度为9的链表，就会形成，4,5长度的两个链表。这样查询效率也会提升吧。这个时候我在问大家一个问题：HashMap有没有可能形成长度超过8的链表，接着上面的例子，不一定是长度是4,5链条链表，也有可能是长度为9的一条链表。
