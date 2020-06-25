@@ -431,17 +431,27 @@ final void treeifyBin(Node<K,V>[] tab, int hash) {
         resize();
     else if ((e = tab[index = (n - 1) & hash]) != null) { 
         // 这里由于索引值一样，官方可太“坏”了，拿尾节点的hash值来获取头节点
+        // hd指向头节点，t1记录前一个节点，与后节点需要互相依赖
         TreeNode<K,V> hd = null, tl = null;
         do {
+            // 将节点放入包装出一个TreeNode对象
             TreeNode<K,V> p = replacementTreeNode(e, null);
+            // 如果t1是null，说明是第一次
             if (tl == null)
+                // 头节点赋值
                 hd = p;
             else {
+                // 当前树节点前节点引用指向用t1记录的前节点
                 p.prev = tl;
+                // 前节点的后引用指向当前节点，形成一个互相依赖，双向链表的关系
                 tl.next = p;
             }
+            // 此时用t1记录前一个节点,为后一个节点时互相使用
             tl = p;
+            // 迭代节点
         } while ((e = e.next) != null);
+        // ★⑵
+        // 将该位置的链表变成ThreeNode的双向链表放入，HashMap毕竟线程不安全，代码的健壮性还是要有的
         if ((tab[index] = hd) != null)
             hd.treeify(tab);
     }
@@ -449,12 +459,12 @@ final void treeifyBin(Node<K,V>[] tab, int hash) {
 
 // For treeifyBin
 TreeNode<K,V> replacementTreeNode(Node<K,V> p, Node<K,V> next) {
+    // 说到底这边只是包了一层TreeNode，底层还是用的Node来保存数据，所以还是Node类型
     return new TreeNode<>(p.hash, p.key, p.value, next);
 }
 
 // TreeNode继承了LinkedHashMap.Entry
 static final class TreeNode<K,V> extends LinkedHashMap.Entry<K,V>{
-    // 看一下红黑树节点
 
     // 父节点
     TreeNode<K,V> parent;
@@ -466,11 +476,71 @@ static final class TreeNode<K,V> extends LinkedHashMap.Entry<K,V>{
     // 颜色flag
     boolean red;
     // Node父类来保存hash, key, val, next
+    TreeNode(int hash, K key, V val, Node<K,V> next) {
+        super(hash, key, val, next);
+    }
+
+    // 转红黑树操作，传入tab
+    final void treeify(Node<K,V>[] tab) {
+        // 根节点
+        TreeNode<K,V> root = null;
+        // hd调的，肯定从this开始
+        for (TreeNode<K,V> x = this, next; x != null; x = next) {
+            //获取子节点
+            next = (TreeNode<K,V>)x.next;
+            // 保证当前节点左右节点为空
+            x.left = x.right = null;
+            if (root == null) {
+                // 头节点无父节点
+                x.parent = null;
+                // 颜色是黑色
+                x.red = false;
+                // 根节点赋值
+                root = x;
+            }
+            else {
+                K k = x.key;
+                int h = x.hash;
+                Class<?> kc = null;
+                for (TreeNode<K,V> p = root;;) {
+                    int dir, ph;
+                    K pk = p.key;
+                    if ((ph = p.hash) > h)
+                        dir = -1;
+                    else if (ph < h)
+                        dir = 1;
+                    else if ((kc == null &&
+                                (kc = comparableClassFor(k)) == null) ||
+                                (dir = compareComparables(kc, k, pk)) == 0)
+                        dir = tieBreakOrder(k, pk);
+
+                    TreeNode<K,V> xp = p;
+                    if ((p = (dir <= 0) ? p.left : p.right) == null) {
+                        x.parent = xp;
+                        if (dir <= 0)
+                            xp.left = x;
+                        else
+                            xp.right = x;
+                        root = balanceInsertion(root, x);
+                        break;
+                    }
+                }
+            }
+        }
+        moveRootToFront(tab, root);
+    }
 }
 
 // LinkedHashMap.Entry有继承了HashMap.Node，所以TreeNode是Node类型
-static class Entry<K,V> extends HashMap.Node<K,V> {}
+static class Entry<K,V> extends HashMap.Node<K,V> {
+    Entry<K,V> before, after;
+    Entry(int hash, K key, V value, Node<K,V> next) {
+        super(hash, key, value, next);
+    }
+}
 
 ```
 
-<font color=red>★⑴</font>首先在链表和红黑树之间的选择，无非都是查询效率的问题。如果产生链表，就必须从头节点一层层next，时间复杂度是O(n)，这种查询效率非常糟糕，所以减少hash碰撞就是为了提高HashMap的性能。但是又不可避免会出现hash碰撞，形成链表。所以官方通过大量的实验测试来制定了HashMap重要参数，例如负载因子0.75，数组长度以2的次方幂等。而且采取了链表长度大于8并且数组长度大于等于64，转红黑树的效率会提升等优化措施，并且建议HashMap的所存放的数据量是可以提前预估好的，通过指定容量，就不会频繁扩容（扩容机制）影响性能。在这里链表长度大于8并且数组长度小于64也是一种优化措施，HashMap会认为长度在64以下的没有必要去转红黑树，先将其扩容，之前对于我在扩容分析如果吃的很透的话，我下面举的例子会轻松理解，首先我补一个细节，当进入treeifyBin方法之前，第9个元素已经放在第8的元素的next中了，p.next = newNode(hash, key, value, null);这是源码。例：假设数组的长度为16，在很极端的情况，我给出的8个hash值不同的元素所计算的索引值一样(只需要各个元素hash值后4位一样就行)，形成一个长度为8的链表，如果此时我在放一个元素，就很极端，索引值和这8个元素一样，成为链表的第9个节点，调用treeifyBin后发现，长度不满足64，只能resize，之前我说过，数组扩容两倍后，有可能将链表散到两个位置，一个是原数组位置，一个是原数组索引+原数组长度。有可能长度为9的链表，就会形成，4,5长度的两个链表。这样查询效率也会提升吧。这个时候我在问大家一个问题：HashMap有没有可能形成长度超过8的链表，接着上面的例子，不一定是长度是4,5链条链表，也有可能是长度为9的一条链表。
+<font color=red>★⑴</font>首先在链表和红黑树之间的选择，无非都是查询效率的问题。如果产生链表，就必须从头节点一层层next，时间复杂度是O(n)，这种查询效率非常糟糕，所以减少hash碰撞就是为了提高HashMap的性能。但是又不可避免会出现hash碰撞，形成链表。所以官方通过大量的实验测试来制定了HashMap重要参数，例如负载因子0.75，数组长度以2的次方幂等。而且采取了链表长度大于8并且数组长度大于等于64，转红黑树的效率会提升等优化措施，并且建议HashMap的所存放的数据量是可以提前预估好的，通过指定容量，就不会频繁扩容（扩容机制）影响性能。在这里链表长度大于8并且数组长度小于64也是一种优化措施，HashMap会认为长度在64以下的没有必要去转红黑树，先将其扩容，之前对于我在扩容分析如果吃的很透的话，我下面举的例子会轻松理解，首先我补一个细节，当进入treeifyBin方法之前，第9个元素已经放在第8的元素的next中了，p.next = newNode(hash, key, value, null);这是源码。例：假设数组的长度为16，在很极端的情况，我给出的8个hash值不同的元素所计算的索引值一样(只需要各个元素hash值后4位一样就行)，形成一个长度为8的链表，如果此时我在放一个元素，就很极端，索引值和这8个元素一样，成为链表的第9个节点，调用treeifyBin后发现，长度不满足64，只能resize，之前我说过，数组扩容两倍后，有可能将链表散到两个位置，一个是原数组位置，一个是原数组索引+原数组长度。有可能长度为9的链表，就会形成，4,5长度的两个链表。这样查询效率也会提升吧。这个时候我在问大家一个问题：HashMap有没有可能形成长度超过8的链表，接着上面的例子，不一定是长度是4,5链条链表，也有可能是长度为9的一条链表，这说明这9个元素的hash值后5位是一样的，所以说以长度超过8的链表也是有可能的。<br />
+
+<font color=red>★⑵</font>所以这里还有一个注意点，链表如何去转红黑树的，这段通过尾节点索引获取头节点，进行迭代转换ThreeNode类型，并转成双向链表的转红黑树过渡过程。大家也不要轻易去忽略，看源码和背知识点或者是看人家阉割版培训机构源码解析视频有一个很大的区别就是，你可以将源码中作者使用的很多细节在你的回答下体现出来。而不是一上来就说这个过程是怎么做的原理是什么，将过渡过程省略，导致这里的知识空缺，这还是很危险的，假设是我面试你呢？是自己分析的源码和背知识点的人是一目了然的，当然，除非有些面试官自己也不是太懂，这个除外。在补充一点，像很多容器类啊，什么链表啊，很常见，如果是感觉很吃力的话，分为两种人，第一种人是各个引用和对象的关系不能分的特别清楚，第二种就是数据结构和算法知识比较贫乏，这里我没有特别好的建议，一个就是看相关书，一个就是刷算法，刷题可以自己去leetcode上去练习数据结构方面特别是链表这块的题目。上面我也提过培训机构阉割版源码解析视频只能是辅助你，启发你，你并不能说看完就懂，更何况大多数培训机构为了都是赚钱，挂羊头卖狗肉又不是一次两次了，关键是这狗肉也不给你剁碎了，让你可以自己嚼。
