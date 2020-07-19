@@ -250,7 +250,99 @@ private void fastRemove(int index) {
 }
 ```
 
-#### ArrayList的迭代器
+#### ArrayList的迭代器(设计模式-迭代)和fail-fast(快速失败)机制
+```java
+// 还有一个迭代器ListItr，这个大家可以尝试自己分析分析
+public Iterator<E> iterator() {
+    // 主要是new一个迭代器返回
+    return new Itr();
+}
 
+// 实现迭代器接口
+private class Itr implements Iterator<E> {
+    int cursor;       // index of next element to return
+    int lastRet = -1; // index of last element returned; -1 if no such
+    // 迭代器的modCount，在获取迭代器时获取容器的结构修改次数
+    int expectedModCount = modCount;
 
-#### fail-fast(快速失败)机制
+    // 指针，判断后面是否还有元素
+    public boolean hasNext() {
+        return cursor != size;
+    }
+
+    // 获取下面的元素
+    @SuppressWarnings("unchecked")
+    public E next() {
+        // 判断容器的修改结构是否和迭代器的修改结构一致，不一致抛出异常(快速失败)
+        checkForComodification();
+        // 获取当前指向的元素(cursor不是下标，可以说是容器中第几个元素)
+        int i = cursor;
+        // 判断是否超出
+        if (i >= size)
+            throw new NoSuchElementException();
+        // 获取当前的数组
+        Object[] elementData = ArrayList.this.elementData;
+        // 线程不安全，进行check
+        if (i >= elementData.length)
+            throw new ConcurrentModificationException();
+        // 指针+1
+        cursor = i + 1;
+        // 赋值lastRet并取值，注意，取的是旧cursor，这个才是当前的下标
+        return (E) elementData[lastRet = i];
+    }
+
+    // 通过遍历的方法取删除，必须通过迭代器删除，不然会出问题
+    // 因为你一边删除，一边前移，不会把每个元素迭代到
+    public void remove() {
+        // 还没有调用next获取元素是不能删除的
+        if (lastRet < 0)
+            throw new IllegalStateException();
+        // 快速失败检查
+        checkForComodification();
+
+        try {
+            // 通过原容器进行删除，删除的是当前迭代获取的元素，由于next记录了下标
+            ArrayList.this.remove(lastRet);
+            // 当前指针就需要减1，因为lastRet比cursor小1，直接赋，见next方法
+            cursor = lastRet;
+            // 这里删完过后，lastRet归-1，必须重新调用next获取再删，这是符合逻辑的。
+            // 但是也要注意的是next方法必须在hasNext之下进行，以确保有元素可以获取。
+            lastRet = -1;
+            // 更新迭代器结构变化次数
+            // 因为迭代器本质上也是操作原容器进行删除，通过迭代器删除可以保证不触发机制
+            expectedModCount = modCount;
+        } catch (IndexOutOfBoundsException ex) {
+            throw new ConcurrentModificationException();
+        }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void forEachRemaining(Consumer<? super E> consumer) {
+        Objects.requireNonNull(consumer);
+        final int size = ArrayList.this.size;
+        int i = cursor;
+        if (i >= size) {
+            return;
+        }
+        final Object[] elementData = ArrayList.this.elementData;
+        if (i >= elementData.length) {
+            throw new ConcurrentModificationException();
+        }
+        while (i != size && modCount == expectedModCount) {
+            consumer.accept((E) elementData[i++]);
+        }
+        // update once at end of iteration to reduce heap write traffic
+        cursor = i;
+        lastRet = i - 1;
+        checkForComodification();
+    }
+
+    // 由于线程问题，防止容器和对应迭代器版本不同引发的机制，常见的坑在remove
+    // 这种机制叫快速失败机制
+    final void checkForComodification() {
+        if (modCount != expectedModCount)
+            throw new ConcurrentModificationException();
+    }
+}
+```
