@@ -305,6 +305,7 @@ public class Demo {
 }
 ```
 
+**控制台结果：**
 ```console
 1
 2
