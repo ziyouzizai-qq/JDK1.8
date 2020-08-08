@@ -39,13 +39,22 @@ static final class NonfairSync extends Sync {
     final void lock() {
         // 非公平锁如何实现lock
         // compareAndSetState是AQS继承过来的，移步至AbstractQueuedSynchronizer.md中unsafe类
+        // 首先当前线程会先尝试获取锁，由于state默认是0，通过CAS操作来获取锁，一旦获取锁成功
+        // 就保存当前线程为资源的占有线程
+        // 由于是非公平锁，谁争抢到就是谁的
         if (compareAndSetState(0, 1))
+            // setExclusiveOwnerThread是由AQS继承AbstractOwnableSynchronizer类而来
+            // 里面有一个exclusiveOwnerThread属性，用来保存拥有者线程，并提供set-get方法。
             setExclusiveOwnerThread(Thread.currentThread());
         else
+            // 如果CAS失败，说明线程占着锁，但是也有可能这个线程是自己吧
+            // 调用AQS中的acquire方法，该方法在AQS中是模板方法，下面重写了
             acquire(1);
     }
 
+    // 尝试获取独占锁
     protected final boolean tryAcquire(int acquires) {
+        // 调用继承Sync的方法
         return nonfairTryAcquire(acquires);
     }
 }
@@ -63,9 +72,9 @@ static final class FairSync extends Sync {
     }
 
     /**
-        * Fair version of tryAcquire.  Don't grant access unless
-        * recursive call or no waiters or is first.
-        */
+     * Fair version of tryAcquire.  Don't grant access unless
+     * recursive call or no waiters or is first.
+     */
     protected final boolean tryAcquire(int acquires) {
         final Thread current = Thread.currentThread();
         int c = getState();
@@ -104,18 +113,28 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
      * subclasses, but both need nonfair try for trylock method.
      */
     final boolean nonfairTryAcquire(int acquires) {
+        // 获取当前线程
         final Thread current = Thread.currentThread();
+        // 获取当前状态
         int c = getState();
+        // 如果是0，说明资源被锁，nonfairTryAcquire方法就是因为资源被锁而进来
+        // 为什么这里还需要再次判断？
+        // 有可能在你调用getState之前占用线程释放了锁，所以在这里判断是有必要的
         if (c == 0) {
+            // 这里CAS操作获取
             if (compareAndSetState(0, acquires)) {
                 setExclusiveOwnerThread(current);
                 return true;
             }
         }
+        // 如果占用线程是我当前线程，则允许访问，所以说ReentrantLock是一个可重入锁，重入一次state就+1
         else if (current == getExclusiveOwnerThread()) {
+            // acquires是我们传的，并没有直接写+1。
             int nextc = c + acquires;
+            // 肯定不能为负数吧
             if (nextc < 0) // overflow
                 throw new Error("Maximum lock count exceeded");
+            // 设置状态
             setState(nextc);
             return true;
         }
