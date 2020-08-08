@@ -3,6 +3,7 @@
 ### 简介：AbstractQueuedSynchronizer抽象同步队列简称AQS，juc包下中锁的底层实现都是使用的AQS。这次源码解析我不会直接对AbstractQueuedSynchronizer进行单独解析，我会结合ReentrantLock一起解析，所以说这次还需要建立 ReentrantLock.md，一起来理解什么是AQS？
 
 <hr />
+
 ## AQS的内部类Node
 
 **Node**
