@@ -44,7 +44,7 @@ static final class Node {
     }
 
     final Node predecessor() throws NullPointerException {
-        // 后去前节点，空指针检查
+        // 获取前节点，空指针检查，并抛出，利用抛出异常来终止线程
         Node p = prev;
         if (p == null)
             throw new NullPointerException();
@@ -78,6 +78,13 @@ public final void acquire(int arg) {
         // 非占用锁的线程进入等待队列
         acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
         selfInterrupt();
+}
+
+// 如果当前线程被中断过，之后又处于第一个线程node争抢锁成功后返回，就进入selfInterrupt
+// 方法很简单
+static void selfInterrupt() {
+    // 就是将当前线程的中断标志重新设上。
+    Thread.currentThread().interrupt();
 }
 
 // 独占锁释放
@@ -197,7 +204,7 @@ public static boolean isSystemDomainLoader(ClassLoader var0) {
 
 #### AQS的重要属性
 
-1. state：由于AQS我们都不会直接去使用，都是选用并发包下的锁，所以对于对于AQS的不同实现来说state所代表的意思是不一样的，就拿ReentrantLock来说，state表示当前线程获取锁的可重入次数。当然，对于像semaphore，ReentrantReadWriteLock等又是不同的意思。
+1. state：由于AQS我们都不会直接去使用，都是选用并发包下的锁，所以对于AQS的不同实现来说state所代表的意思是不一样的，就拿ReentrantLock来说，state表示当前线程获取锁的可重入次数。当然，对于像semaphore，ReentrantReadWriteLock等又是不同的意思。
 ```java
 private volatile int state;
 /**
@@ -297,17 +304,31 @@ final boolean acquireQueued(final Node node, int arg) {
                 failed = false;
                 return interrupted;
             }
-            // 前驱不是head或者是争抢锁失败
+            // 前驱不是head或者是争抢锁失败的情况
+            // 所以说一旦当前节点的前驱节点为Node.SIGNAL，就需要把当前线程阻塞挂起
+            // 这是需要LockSupport来支持
             if (shouldParkAfterFailedAcquire(p, node) &&
                 // 利用LockSupport的park方法挂起并做中断判断
                 parkAndCheckInterrupt())
-
+                // 如果当前线程被中断，interrupted为true，等到这个线程node争抢锁成功后返回。
                 interrupted = true;
         }
     } finally {
+        // ★⑷
         if (failed)
             cancelAcquire(node);
     }
+}
+
+// LockSupport类
+private final boolean parkAndCheckInterrupt() {
+    // 底层还是UNSAFE来操作的
+    // LockSupport.park最终把线程交给系统内核进行阻塞，UNSAFE也是直接操作本地方法，
+    // 本地方法的方法体是看不见的，因为是用C语言写的。但是具体肯定是通过操作系统去阻塞内核中的线程
+    LockSupport.park(this);
+    // 当前线程通过LockSupport.park被阻塞挂起，如果在此期间其他线程中断该线程或者是调用unpark。该线程就会被唤醒
+    // 判断当前线程是否被中断，被中断返回true，并清理中断标志
+    return Thread.interrupted();
 }
 
 private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
@@ -315,18 +336,20 @@ private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
     int ws = pred.waitStatus;
     // 如果pred是head，ws为默认值0
     // 前驱节点需要被唤醒的情况返回true
+    // 由于是自旋。
     if (ws == Node.SIGNAL)
         /*
          * This node has already set status asking a release
          * to signal it, so it can safely park.
          */
         return true;
-    // CANCELLED(线程在队列里等待)的情况
+    // CANCELLED(线程被取消的情况)的情况
     if (ws > 0) {
         /*
          * Predecessor was cancelled. Skip over predecessors and
          * indicate retry.
          */
+        // 跳过那些CANCELLED状态的节点，这里具体理解看★⑸
         do {
             node.prev = pred = pred.prev;
         } while (pred.waitStatus > 0);
@@ -337,6 +360,11 @@ private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
          * need a signal, but don't park yet.  Caller will need to
          * retry to make sure it cannot acquire before parking.
          */
+         // 其实对于ReentrantLock来说，AQS队列都是到这里，因为所有的node节点waitStatus都是用的默认值0
+         // 但是这里主要还是对于前驱元素来讲，则含头不含尾。
+         // 但是我理解为将当前线程的node的waitStatus保存到前驱节点上
+         // 通过CAS设置前驱节点状态
+         // 由于上面对于前驱节点还有结构性变化，还需要通过CAS来保证线程安全，有可能存在waitStatus是CANCELLED的情况。
         compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
     }
     return false;
@@ -353,3 +381,31 @@ private void setHead(Node node) {
 ```
 
 <font color=red>★⑶</font>这里也没有做任何的CAS操作来保证原子性，是因为设置head只有第二个节点获取锁成功后才能设置，因此只有第二个进入AQS队列节点的线程有权限设置，给head设置只有一个线程，因此不存在线程安全问题，那这里有人就说了，在enq(final Node node)方法中，不也有设置head吗，请注意enq方法设置的前提，是AQS中没有任何元素时才会设置，很显然这里AQS队列已经存在元素了。在这里setHead方法只对thread和prev进行初始化，是因为在addWaiter中就只对这两个进行设置，因为setHead是因为当前线程为第二个节点并且获得锁，而离开AQS队列，所以对于node的其他属性就是零值，因此setHead对这些属性肯定也不会管的。用白话就是，你是第一个非空线程的节点，尽管你已经来到AQS队列，但是我还是给你一次机会去争抢锁，如果争抢成功，就需要离开队列，所以在没有确定你这次机会成功之前，我只对你维护双向队列关系的属性进行赋值，其他状态一律不设，等你争抢失败后或者不是第一个非空线程的节点在设置为时不晚。<br />
+
+<font color=red>★⑷</font>这里要想进入cancelAcquire方法，failed就必须为true，但是在try语句块中采取的是自旋的方式，唯一退出的方式是处于AQS队列中第二个非空线程节点的线程获取到锁后return，但是在里面failed是被设置成false的。那cancelAcquire还是执行不了，有点感觉是不是人家搞错了，怎么可能人家搞错了，这里是采用抛出异常终止线程从而执行finally块，还记不记得node.predecessor()中抛出一个空指针异常。没错，这里如果一旦抛出NPE，当前线程就会走cancelAcquire，但是不要忘记tryAcquire中也有可能抛出异常new Error("Maximum lock count exceeded")，其实想抛出这两个异常以我现在对源码的理解都挺难的，目前权且理解为是为了保证这两种不正常情况下的健壮性。对于空指针我是这么理解的，肯定不会出现，因为前驱节点为null只有head节点存在，但是head节点是一个哨兵节点(没有任何线程持有的节点，注：这并不是对哨兵节点的解释)，所以说对于线程节点来讲，前驱节点一定存在。那至于state是否存在小于-1的情况，就需要等unlock解析完后再回头看。异常终止线程也可以写个小的demo测试一下。如下：<br />
+
+```java
+private static String retStr(String s) throws NullPointerException {
+    if (s == null)
+        throw new NullPointerException();
+    else
+        return s;
+}
+
+public static void main(String[] args) {
+    try {
+        retStr(null);
+        for (;;) {
+
+        }
+    } finally {
+        System.out.println("finally");
+    }
+}
+```
+
+<font color=red>★⑸</font>进入这个方法的线程条件是不是第一个线程节点或者是第一个线程节点，但争抢锁失败的。但是进入这个方法为什么只要当前线程的线程节点和他的前节点呢，其实整个队列都有可能需要修改，只是对于每一个线程来说只需要管理自己node和前节点的关系，从而影响到整个队列。AQS双向队列是多线程维护的数据结构，就除了head作为哨兵节点外，其他每一个线程节点对应的那个线程进行自旋。在这里每一个线程如果前驱节点的状态是线程取消状态的话，就需要过滤自己的前驱节点，向前迭代查找新的节点，所以利用每个线程寻找前驱节点来对那些线程取消的node进行过滤。但是貌似存在一个边界值的问题，如果tail元素是线程取消状态呢，tail元素可没有后继节点。但是问题不大，只需要其他线程获取锁失败进入AQS队列，成为新的tail，就能把前tail元素给过滤了，这里的边界值问题其实也就没有必要再过多的纠结了。但是这里的巧妙之处并不是只有这一点，从中也可以发现，后继元素的线程状态都是存储在前驱元素的状态中，也就是说第二个节点线程状态是存放在哨兵节点中，以此类推。总结：最终所有线程的node都会通过自旋shouldParkAfterFailedAcquire方法来过滤线程取消状态下的node，然后在通过CAS操作对前驱节点的waitStatus设置Node.SIGNAL，最终前驱节点waitStatus为true而调用LockSupport.park将线程挂起。<br />
+
+<font color=red>ReentrantLock独占锁lock小总结1：</font>从ReentrantLock使用AQS来说，我现在将非公平锁的加锁过程讲解完毕，但是和我之前理解的非公平锁有点出入，我之前理解的非公平锁，多个线程操作同一个对象时，所有线程一块抢，所有线程包括进入队列中的。但是以目前来说，为什么只有队列里第一个线程node才有机会和外界整准备尝试争抢锁的线程去竞争，那队列后面的节点是没有机会去尝试获取锁的，这不是排队嘛，不成了公平锁了吗。再极端一点，如果现在很多线程已经进入队列，外界已经没有任何线程去争夺锁(锁是没有任何线程占有)，第一个线程node获取锁肯定能成功，转而退出AQS队列。这种排队等候的机制就很公平，总之呢，这里我是不能理解的，要想得到答案就需要将源码解析完，不然就是管中窥豹可见一斑。<br />
+
+<font color=red>ReentrantLock独占锁lock小总结2：</font>其实应该线程争夺锁有三次机会，机会1：直接尝试去修改state状态，修改成功这自己占有。机会二：由于ReentrantLock是可重入锁，尽管在机会1中失败了，但是必要确认一下占锁的线程是否是自己，这段过程中还会去尝试去获取锁。机会三，：前两次都失败了，如果前驱元素是head的线程node的线程，还会尝试去获得锁。如果尝试失败或者是前驱不是head，前驱线程状态是SIGNAL，就需要将其挂起，这种挂起是要通过操作系统内核的，绝对是重量级的。之所以要这么使用，是为了方便AQS去适应灵活的并发场景。其实在一些低并发的情况下，AQS队列长度不是很长，甚至没有，这种情况的线程数量很少，CAS去获取锁的成功率很大，而且用完就下一个node去争抢，在这种线程少的情况下是没必要通过系统内核阻塞线程。线程少的情况下用CAS自旋的这种方式会更加的轻量级。但是一旦在高并发甚至是超高并发的场景下，AQS队列中的元素很多，这就代表着线程的数量就很多，如果大量的线程进行一个自旋，会严重占用CPU资源，而且线程上下文切换频繁，所带来的开销不如将这些线程直接阻塞挂起。这也算是很常见的一个结论，在低并发的场景下，更多的是选择CAS自旋这种轻量级的方式去解决，而在高并发场景下，肯定是选更加重量级的，当然也可以将这些理解为悲观锁和乐观锁的选择。<br />

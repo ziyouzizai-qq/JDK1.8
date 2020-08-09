@@ -135,6 +135,7 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
             if (nextc < 0) // overflow
                 throw new Error("Maximum lock count exceeded");
             // 设置状态
+            // 这里没有通过CAS来设置，是因为本身这个锁已经被当前线程获取，只有一个线程可以改，实现了偏向锁的功能
             setState(nextc);
             return true;
         }
