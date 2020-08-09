@@ -215,7 +215,7 @@ public class Demo1 {
             System.out.println("子线程读取：" + local.get());
         }, "子线程");
         child.start();
-        System.out.println("main线程读取：" + local.get());;
+        System.out.println("main线程读取：" + local.get());
     }
 }
 ```
@@ -242,7 +242,7 @@ public class Demo1 {
             System.out.println("子线程读取：" + local.get());
         }, "子线程");
         child.start();
-        System.out.println("main线程读取：" + local.get());;
+        System.out.println("main线程读取：" + local.get());
     }
 }
 ```
