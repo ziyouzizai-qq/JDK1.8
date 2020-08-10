@@ -68,6 +68,8 @@ static final class FairSync extends Sync {
     // Sync中的抽象方法重写，直接调用AQS中获取独占锁
     final void lock() {
         // 然而此时已经对tryAcquire进行重写，好好感受JDK并发组中高手对于接口模板设计的技术手法。
+        // 公平锁不会像非公平锁一上来去尝试去获取锁，为什么？
+        // 因为当前线程是后来的，要先确保队列中的元素先去抢，这就是公平和非公平的区别
         acquire(1);
     }
 
@@ -76,9 +78,12 @@ static final class FairSync extends Sync {
      * recursive call or no waiters or is first.
      */
     protected final boolean tryAcquire(int acquires) {
+        // 获取当前线程
         final Thread current = Thread.currentThread();
         int c = getState();
         if (c == 0) {
+            // hasQueuedPredecessors为公平策略，移步至AQS
+            // 如果返回false，说明有权利争抢
             if (!hasQueuedPredecessors() &&
                 compareAndSetState(0, acquires)) {
                 setExclusiveOwnerThread(current);
@@ -86,9 +91,11 @@ static final class FairSync extends Sync {
             }
         }
         else if (current == getExclusiveOwnerThread()) {
+            // 进行重入
             int nextc = c + acquires;
             if (nextc < 0)
                 throw new Error("Maximum lock count exceeded");
+            // 偏向，不需要CAS保证原子性
             setState(nextc);
             return true;
         }
@@ -142,15 +149,28 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
         return false;
     }
 
+
+    // 尝试释放锁
     protected final boolean tryRelease(int releases) {
+        // 获取状态-1
         int c = getState() - releases;
+        // 查看当前线程是否是占有线程
         if (Thread.currentThread() != getExclusiveOwnerThread())
+            // 不是就抛异常，主要还是进行线程身份检查，防止锁并没有被lock，而用调unlock，或者是当前线程不是占有线程
             throw new IllegalMonitorStateException();
+        // 如果是占有线程，free默认为false
         boolean free = false;
+        // ReentrantLock是可重入锁，也有可能重入n次
+        // 如果state为0，要释放资源了
         if (c == 0) {
+            // 返回flag为true
             free = true;
+            // 线程争抢锁是以state值为条件,只要在state设置之前，把占有线程清理，是可以的
+            // 这里起了一个偏向锁的作用
             setExclusiveOwnerThread(null);
         }
+        // 此时设置state，其实在state设置前的所有操作，包括设置state操作
+        // 因为偏向锁的作用下，直接设置都是线程安全的。
         setState(c);
         return free;
     }
@@ -198,5 +218,13 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
 public void lock() {
     // 调用公平锁的lock方法
     sync.lock();
+}
+```
+
+2. 释放锁：unlock()
+```java
+public void unlock() {
+    // AQS继承过来的方法
+    sync.release(1);
 }
 ```

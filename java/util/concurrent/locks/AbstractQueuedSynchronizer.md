@@ -89,13 +89,50 @@ static void selfInterrupt() {
 
 // 独占锁释放
 public final boolean release(int arg) {
+    // Sync派生类有对tryRelease模板做重写
     if (tryRelease(arg)) {
         Node h = head;
+        // 如果head为null，说明队列存在，如果waitStatus不为零值
+        // 说明第一个线程node需要被唤醒，也间接说明了此时并发量还是挺高的
         if (h != null && h.waitStatus != 0)
             unparkSuccessor(h);
         return true;
     }
+    // 释放失败，说明可重入次数多，这次unlock并非最后一次。
     return false;
+}
+
+private void unparkSuccessor(Node node) {
+    /*
+     * If status is negative (i.e., possibly needing signal) try
+     * to clear in anticipation of signalling.  It is OK if this
+     * fails or if status is changed by waiting thread.
+     */
+    int ws = node.waitStatus;
+    // 如果队列中哨兵节点状态小于0，就更改为无状态0
+    if (ws < 0)
+        compareAndSetWaitStatus(node, ws, 0);
+
+    /*
+     * Thread to unpark is held in successor, which is normally
+     * just the next node.  But if cancelled or apparently null,
+     * traverse backwards from tail to find the actual
+     * non-cancelled successor.
+     */
+     // 获取队列中第一个线程node
+     // TODO:
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node t = tail; t != null && t != node; t = t.prev)
+            if (t.waitStatus <= 0)
+                s = t;
+    }
+    // 如果不为null
+    if (s != null)
+        // 唤醒该线程，这个时候他又会在AQS队列里尝试获取锁，如果长时间获取不到，说明并发量还是挺高的
+        // 还是有可能park的
+        LockSupport.unpark(s.thread);
 }
 
 protected boolean tryAcquire(int arg) {
@@ -408,4 +445,24 @@ public static void main(String[] args) {
 
 <font color=red>ReentrantLock独占锁lock小总结1：</font>从ReentrantLock使用AQS来说，我现在将非公平锁的加锁过程讲解完毕，但是和我之前理解的非公平锁有点出入，我之前理解的非公平锁，多个线程操作同一个对象时，所有线程一块抢，所有线程包括进入队列中的。但是以目前来说，为什么只有队列里第一个线程node才有机会和外界整准备尝试争抢锁的线程去竞争，那队列后面的节点是没有机会去尝试获取锁的，这不是排队嘛，不成了公平锁了吗。再极端一点，如果现在很多线程已经进入队列，外界已经没有任何线程去争夺锁(锁是没有任何线程占有)，第一个线程node获取锁肯定能成功，转而退出AQS队列。这种排队等候的机制就很公平，总之呢，这里我是不能理解的，要想得到答案就需要将源码解析完，不然就是管中窥豹可见一斑。<br />
 
-<font color=red>ReentrantLock独占锁lock小总结2：</font>其实应该线程争夺锁有三次机会，机会1：直接尝试去修改state状态，修改成功这自己占有。机会二：由于ReentrantLock是可重入锁，尽管在机会1中失败了，但是必要确认一下占锁的线程是否是自己，这段过程中还会去尝试去获取锁。机会三，：前两次都失败了，如果前驱元素是head的线程node的线程，还会尝试去获得锁。如果尝试失败或者是前驱不是head，前驱线程状态是SIGNAL，就需要将其挂起，这种挂起是要通过操作系统内核的，绝对是重量级的。之所以要这么使用，是为了方便AQS去适应灵活的并发场景。其实在一些低并发的情况下，AQS队列长度不是很长，甚至没有，这种情况的线程数量很少，CAS去获取锁的成功率很大，而且用完就下一个node去争抢，在这种线程少的情况下是没必要通过系统内核阻塞线程。线程少的情况下用CAS自旋的这种方式会更加的轻量级。但是一旦在高并发甚至是超高并发的场景下，AQS队列中的元素很多，这就代表着线程的数量就很多，如果大量的线程进行一个自旋，会严重占用CPU资源，而且线程上下文切换频繁，所带来的开销不如将这些线程直接阻塞挂起。这也算是很常见的一个结论，在低并发的场景下，更多的是选择CAS自旋这种轻量级的方式去解决，而在高并发场景下，肯定是选更加重量级的，当然也可以将这些理解为悲观锁和乐观锁的选择。<br />
+<font color=red>ReentrantLock独占锁lock小总结2：</font>其实应该线程争夺锁有三次机会，机会1：直接尝试去修改state状态，修改成功这自己占有。机会二：由于ReentrantLock是可重入锁，尽管在机会1中失败了，但是必要确认一下占锁的线程是否是自己，这段过程中还会去尝试去获取锁。机会三，：前两次都失败了，如果前驱元素是head的线程node的线程，还会尝试去获得锁。如果尝试失败或者是前驱不是head，前驱线程状态是SIGNAL，就需要将其挂起，这种挂起是要通过操作系统内核的，绝对是重量级的。之所以要这么使用，是为了方便AQS去适应灵活的并发场景。其实在一些低并发的情况下，AQS队列长度不是很长，甚至没有，这种情况的线程数量很少，CAS去获取锁的成功率很大，而且用完就下一个node去争抢，在这种线程少的情况下是没必要通过系统内核阻塞线程。线程少的情况下用CAS自旋的这种轻量级方式会更加的高效。但是一旦在高并发甚至是超高并发的场景下，AQS队列中的元素很多，这就代表着线程的数量就很多，如果大量的线程进行一个自旋，会严重浪费CPU资源，而且线程上下文切换频繁，所带来的开销会非常大，此时就会采用重量级的方式--阻塞线程挂起。这也算是很常见的一个结论，在低并发的场景下，更多的是选择CAS自旋这种轻量级的方式去解决，而在高并发场景下，肯定是选更加重量级的，当然也可以将这些理解为悲观锁和乐观锁的选择。<br />
+
+#### hasQueuedPredecessors：公平策略解析
+```java
+public final boolean hasQueuedPredecessors() {
+    // The correctness of this depends on head being initialized
+    // before tail and on head.next being accurate if the current
+    // thread is first in queue.
+    // 获取尾节点
+    Node t = tail; // Read fields in reverse initialization order
+    // 获取头节点
+    Node h = head;
+    // 记录head的后继节点的快照
+    Node s;
+    // ★⑹
+    return h != t &&
+        ((s = h.next) == null || s.thread != Thread.currentThread());
+}
+```
+
+<font color=red>★⑹</font>之前在总结ReentrantLock公平锁的情况下，有3次争夺锁的机会，但是如果为非公平锁的情况，非公平锁天生就没有机会1，连机会2都要看hasQueuedPredecessors方法的脸色，如果该方法返回false，那这个机会2就有了。这也是为什么公平锁的并发效率要比非公平锁要低，争夺锁的机会就很少。那现在我们就来分析有哪些情况能让非公平锁的机会2给弄破灭，即返回true。即，左右两边为true，就只有两种情况，情况一：头尾两个节点不相等并且头节点的后继为null，这种情况只有一种，即head存在，tail为null，这种情况说明时候存在，其实上面我举过例子，在★⑵中A线程由于处理器分配时间到了，进行线程上下文切换，只设置了head，tail还是null。这种情况说明队列正在被其他线程操作，所以有其他线程在当前线程前面，由于要公平嘛，就必须进入队列等待，机会2直接丧失。解析到这里，我确实不得不佩服juc包的作者Doug Lea真的是太细节了。还有另外一种情况head的后继节点是别的线程，确实符合公平逻辑，但是我总感觉哪儿不对，如果AQS队列中有当前线程的节点，当前线程不应该在那里自旋或者是被挂起吗，为什么会跑到hasQueuedPredecessors中，感觉这种情况不可能发生。这里我也是想了很久，实在是不能理解Doug Lea大佬这行代码，有可能是对某种情况的处理，也有可能仅仅是为了代码的严谨性和健壮性。<br>
