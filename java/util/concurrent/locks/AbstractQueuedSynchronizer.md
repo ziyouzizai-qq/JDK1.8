@@ -570,7 +570,7 @@ private void doReleaseShared() {
             if (ws == Node.SIGNAL) {
                 // CAS设置节点状态，需唤醒=>无状态
                 if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
-                    // 失败就等下一次
+                    // 失败就等下一次，这里的失败原因有可能别的线程已经设置了
                     continue;            // loop to recheck cases
                 // 成功就需要去唤醒后驱节点
                 unparkSuccessor(h);
@@ -579,6 +579,11 @@ private void doReleaseShared() {
                         !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
                 continue;                // loop on failed CAS
         }
+        // 如果head没有改变，只能说明当前的线程的AQS队列快照是不存在后继元素
+        // 存在一个极端的例子，当AQS不存在时，A线程因为state不为0而进入队列，刚创建节点还没有放入队列，处理器时间到了，head为null。
+        // B线程调用countDown将state基数减至0，触发释放机制，因为处理器时间片已经在处理线程B，此时head不存在，在doReleaseShared中自旋一次就break了。
+        // 所以快照因此产生，此刻AQS不存在元素，就不需要唤醒。但是处理器时间片至线程A，生成head并生成A线程节点，此时state为0，自己就直接释放了。
+        // 由此可见，AQS是一个多线程维护的数据结构。前后两个线程在CAS的作用下互不影响，共同运转整个AQS队列。
         if (h == head)                   // loop if head changed
             break;
     }

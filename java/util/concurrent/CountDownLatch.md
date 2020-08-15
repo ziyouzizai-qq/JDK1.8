@@ -77,6 +77,7 @@ private static final class Sync extends AbstractQueuedSynchronizer {
             if (compareAndSetState(c, nextc))
                 // CAS设置成功后，设置后state是否为0
                 // 为0情况，返回true
+                // 释放共享对象，其实只有将基数减至0的线程会触发释放机制，因为最后那条线程nextc == 0为true
                 return nextc == 0;
         }
     }
