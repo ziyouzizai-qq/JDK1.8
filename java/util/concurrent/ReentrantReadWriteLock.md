@@ -692,7 +692,7 @@ abstract static class Sync extends AbstractQueuedSynchronizer {
 
 ### 4-4.ReadLock的unlock
 
-上面看完了读锁的加锁，现在来解析解锁
+上面看完了读锁的加锁，现在来解析读锁
 
 ```java
 // ReadLock
@@ -776,6 +776,8 @@ private void doReleaseShared() {
             break;
     }
 }
+
+
 ```
 
 
